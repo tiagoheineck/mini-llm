@@ -28,6 +28,7 @@ META = {
         ("Professor", "Prof. Tiago Heineck"),
         ("Duração", "≈ 2 horas"),
         ("Pré-requisitos", "Python básico · Docker"),
+        ("Código completo", '<a href="https://github.com/tiagoheineck/mini-llm" style="color:#fff">github.com/tiagoheineck/mini-llm</a>'),
     ],
     "rodape": (
         "Instituto Federal Catarinense · Campus Videira<br>"
