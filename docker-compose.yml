@@ -1,0 +1,38 @@
+services:
+  train:
+    build: .
+    image: mini-llm
+    user: "${UID:-1000}:${GID:-1000}"   # arquivos em outputs/ ficam com o seu usuário
+    volumes:
+      - ./config.yaml:/app/config.yaml   # edite o config sem rebuildar
+      - ./data:/app/data                 # troque o texto de treino sem rebuildar
+      - ./outputs:/app/outputs           # checkpoint e histórico ficam na sua máquina
+
+  generate:
+    image: mini-llm
+    user: "${UID:-1000}:${GID:-1000}"   # arquivos em outputs/ ficam com o seu usuário
+    entrypoint: ["python", "generate.py"]
+    volumes:
+      - ./outputs:/app/outputs
+
+  evaluate:
+    image: mini-llm
+    user: "${UID:-1000}:${GID:-1000}"
+    entrypoint: ["python", "evaluate.py"]
+    command: ["data/avaliacao/1_machado_memorias_postumas.txt",
+              "data/avaliacao/2_camoes_os_lusiadas.txt",
+              "data/avaliacao/3_espanhol_dom_quixote.txt",
+              "data/avaliacao/4_ingles_alice.txt"]
+    volumes:
+      - ./config.yaml:/app/config.yaml
+      - ./data:/app/data
+      - ./outputs:/app/outputs
+
+  web:
+    image: mini-llm
+    user: "${UID:-1000}:${GID:-1000}"
+    entrypoint: ["python", "server.py"]
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./outputs:/app/outputs

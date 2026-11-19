@@ -1,0 +1,261 @@
+    <section id="apresentacao">
+      <h2>Apresentação</h2>
+      <p>Modelos como o ChatGPT e o Claude são <em>Large Language Models</em> (LLMs): redes neurais treinadas para fazer uma única coisa, <strong>prever o próximo pedaço de texto</strong>. Neste roteiro você vai construir uma LLM do zero, com a mesma arquitetura delas (o <em>Transformer decoder-only</em>, a base do GPT), só que em miniatura: cerca de 0,8 milhão de parâmetros, treinada em poucos minutos na CPU do seu computador.</p>
+      <p>O modelo vai aprender a escrever no estilo de <strong>Dom Casmurro</strong>, de Machado de Assis, caractere por caractere. No caminho você vai mexer nos parâmetros de treino e ver, na prática, o efeito de cada um.</p>
+      <div class="caixa">
+        <div class="rot">Objetivos de aprendizagem</div>
+        <p>Ao final deste roteiro, o estudante deverá ser capaz de:</p>
+        <ol>
+          <li>Explicar como uma LLM transforma texto em tokens e aprende a prever o próximo token.</li>
+          <li>Identificar as peças de um Transformer: embeddings, atenção causal, MLP e conexões residuais.</li>
+          <li>Treinar um modelo ajustando hiperparâmetros (learning rate, tamanho do modelo, contexto, dropout).</li>
+          <li>Avaliar um modelo de linguagem com loss de validação e perplexidade.</li>
+          <li>Diferenciar um <em>modelo base</em> de um <em>modelo assistente</em> (como o ChatGPT).</li>
+        </ol>
+      </div>
+      <div class="cards">
+        <div class="card"><div class="ic"></div><h4>Tokenização</h4><p>Texto vira uma sequência de números.</p></div>
+        <div class="card"><div class="ic"></div><h4>Transformer</h4><p>A rede que olha o contexto e prevê o próximo token.</p></div>
+        <div class="card"><div class="ic"></div><h4>Treino</h4><p>Ajustar os pesos para errar cada vez menos.</p></div>
+        <div class="card"><div class="ic"></div><h4>Avaliação</h4><p>Medir o quanto o modelo generaliza para textos novos.</p></div>
+      </div>
+    </section>
+
+    <section id="ambiente">
+      <h2>Preparando o ambiente</h2>
+      <p>Você só precisa do <strong>Docker</strong>. Python e PyTorch rodam dentro do container, então não é preciso instalar nada além disso. Confira a instalação:</p>
+      {{cmd}}docker --version
+docker compose version{{/cmd}}
+      <p>Crie uma pasta para o projeto. Ao final do roteiro ela terá esta estrutura:</p>
+      {{cmd:estrutura do projeto}}mini-llm/
+├── data/
+│   └── input.txt          # texto de treino
+├── config.yaml            # parâmetros de treino
+├── model.py               # a arquitetura (o "cérebro")
+├── train.py               # o loop de treino
+├── generate.py            # gera texto com o modelo treinado
+├── Dockerfile
+└── docker-compose.yml{{/cmd}}
+      <div class="caixa alerta">
+        <div class="rot">Atalho</div>
+        <p>O projeto completo, incluindo o script de avaliação e uma interface web, está em <a href="https://github.com/tiagoheineck/mini-llm">github.com/tiagoheineck/mini-llm</a>. Mas a graça está em montar arquivo por arquivo, entendendo cada um.</p>
+      </div>
+    </section>
+
+    <section id="dados">
+      <h2>Passo 1 · Os dados</h2>
+      <p>Toda LLM começa com texto. Vamos usar <em>Dom Casmurro</em> (domínio público, Projeto Gutenberg), com cerca de 380 mil caracteres:</p>
+      {{cmd}}mkdir -p mini-llm/data && cd mini-llm
+curl -L https://raw.githubusercontent.com/tiagoheineck/mini-llm/main/data/input.txt -o data/input.txt{{/cmd}}
+      <p>Pode trocar por qualquer arquivo <code>.txt</code>: letras de música, código-fonte, receitas, as conversas de um grupo. O modelo aprende o estilo do que você der para ele. Use pelo menos uns 200 KB de texto.</p>
+
+      <h3>Tokenização</h3>
+      <p>Redes neurais trabalham com números, não com letras. <strong>Tokenizar</strong> é converter o texto em uma sequência de inteiros. Aqui usamos a tokenização mais simples possível: <strong>cada caractere é um token</strong>.</p>
+      {{cmd:python}}chars = sorted(set(texto))            # ['\n', ' ', '!', ..., 'a', 'b', ..., 'õ', 'ú']  → 95 caracteres
+stoi  = {c: i for i, c in enumerate(chars)}
+encode("Capitu")  # → [27, 50, 65, 58, 69, 70]{{/cmd}}
+      <p>LLMs reais usam <em>subpalavras</em> (algoritmo BPE): "Capitu" viraria 2 ou 3 tokens, e o vocabulário tem ~100 mil tokens. A ideia é a mesma.</p>
+
+      <h3>A tarefa: prever o próximo token</h3>
+      <p>O treino é <em>auto-supervisionado</em>: não precisamos rotular nada. Pegamos um trecho do texto como entrada (<code>x</code>) e o mesmo trecho deslocado uma posição como resposta esperada (<code>y</code>):</p>
+      <div class="tabela">
+        <table>
+          <thead><tr><th>Entrada (contexto)</th><th>Alvo (próximo caractere)</th></tr></thead>
+          <tbody>
+            <tr><td><code>C</code></td><td><code>a</code></td></tr>
+            <tr><td><code>Ca</code></td><td><code>p</code></td></tr>
+            <tr><td><code>Cap</code></td><td><code>i</code></td></tr>
+            <tr><td><code>Capi</code></td><td><code>t</code></td></tr>
+            <tr><td><code>Capit</code></td><td><code>u</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="leg">Tabela 1 – Um trecho de 6 caracteres gera 5 exemplos de treino de uma vez</p>
+      <p>Separamos 90% do texto para treino e os 10% finais para <strong>validação</strong>: um trecho que o modelo nunca vê durante o treino, usado para medir se ele está aprendendo de verdade ou só decorando.</p>
+    </section>
+
+    <section id="modelo">
+      <h2>Passo 2 · O modelo</h2>
+      <p>O arquivo <code>model.py</code> define o <strong>MiniGPT</strong>. O caminho de um texto por dentro dele é:</p>
+      <ol>
+        <li><strong>Embeddings</strong>: cada token vira um vetor de <code>n_embd</code> números. Um segundo embedding codifica a <em>posição</em> do token na frase.</li>
+        <li><strong>Blocos Transformer</strong> (<code>n_layer</code> vezes), cada um com:
+          <ul>
+            <li><strong>Atenção causal</strong>: cada token "consulta" os tokens anteriores para decidir o que é relevante. A máscara triangular impede que ele espie o futuro.</li>
+            <li><strong>MLP</strong>: uma rede densa que processa cada posição.</li>
+            <li><strong>LayerNorm e conexões residuais</strong> (<code>x = x + ...</code>), que estabilizam o treino de redes profundas.</li>
+          </ul>
+        </li>
+        <li><strong>Cabeça de saída</strong>: transforma o vetor final em uma pontuação (<em>logit</em>) para cada token do vocabulário. Aplicando <em>softmax</em>, temos a probabilidade de cada caractere ser o próximo.</li>
+      </ol>
+      {{codigo:model.py|Arquitetura do MiniGPT (Transformer decoder-only)}}
+      <div class="caixa">
+        <div class="rot">Para entender a atenção</div>
+        <p>Cada token produz três vetores: <strong>Query</strong> ("o que estou procurando?"), <strong>Key</strong> ("o que eu ofereço?") e <strong>Value</strong> ("minha informação"). A atenção compara a Query de um token com as Keys dos anteriores (<code>q @ k.T</code>), transforma essas notas em pesos com softmax e faz uma média ponderada dos Values. Com <code>n_head</code> cabeças, isso acontece em paralelo, e cada cabeça pode aprender a prestar atenção em coisas diferentes.</p>
+      </div>
+    </section>
+
+    <section id="parametros">
+      <h2>Passo 3 · Os parâmetros de treino</h2>
+      <p>Todos os "botões" do experimento ficam em <code>config.yaml</code>. Há dois tipos de número em uma rede neural:</p>
+      <ul>
+        <li><strong>Parâmetros</strong> (pesos): os ~826 mil números que o treino ajusta sozinho.</li>
+        <li><strong>Hiperparâmetros</strong>: as escolhas que <em>você</em> faz antes de treinar, como as deste arquivo.</li>
+      </ul>
+      {{codigo:config.yaml|Hiperparâmetros do treino}}
+      <div class="tabela">
+        <table>
+          <thead><tr><th>Hiperparâmetro</th><th>Se aumentar…</th><th>Se diminuir…</th></tr></thead>
+          <tbody>
+            <tr><td><code>learning_rate</code></td><td>aprende rápido, mas pode oscilar ou divergir</td><td>estável, mas lento demais</td></tr>
+            <tr><td><code>n_layer</code>, <code>n_embd</code></td><td>modelo maior, mais capaz e mais lento; risco de decorar</td><td>mais rápido, mas aprende menos</td></tr>
+            <tr><td><code>block_size</code></td><td>enxerga mais contexto, frases mais coerentes</td><td>"esquece" o início da frase</td></tr>
+            <tr><td><code>dropout</code></td><td>menos overfitting, treino mais lento</td><td>decora o texto de treino mais fácil</td></tr>
+            <tr><td><code>batch_size</code></td><td>gradiente mais estável, mais memória</td><td>passos mais ruidosos</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="leg">Tabela 2 – Efeito dos principais hiperparâmetros</p>
+      <h3>O agendamento do learning rate</h3>
+      <p>O learning rate não é constante. Nos primeiros <code>warmup_iters</code> passos ele <strong>sobe</strong> de zero até <code>learning_rate</code> (<em>warmup</em>), porque no início os pesos são aleatórios e passos grandes desestabilizam o modelo. Depois ele <strong>decai em cosseno</strong> até <code>min_lr</code>, para fazer ajustes finos no final. É o mesmo esquema usado no treino do GPT-3 e do LLaMA.</p>
+    </section>
+
+    <section id="treino">
+      <h2>Passo 4 · O loop de treino</h2>
+      <p>O <code>train.py</code> junta tudo. O coração dele são quatro linhas, repetidas <code>max_iters</code> vezes:</p>
+      {{cmd:python}}xb, yb = get_batch("train")       # 1. pega trechos aleatórios do texto
+_, loss = model(xb, yb)           # 2. forward: prevê e mede o erro
+loss.backward()                   # 3. backward: calcula o gradiente de cada peso
+optimizer.step()                  # 4. ajusta os pesos na direção que reduz o erro{{/cmd}}
+      <p>A <strong>loss</strong> é a <em>entropia cruzada</em>: o quão "surpreso" o modelo ficou com o caractere que realmente veio. Um modelo que chuta ao acaso entre 95 caracteres tem loss ln(95) ≈ 4,55. Tudo abaixo disso é aprendizado.</p>
+      {{codigo:train.py|Script de treino completo}}
+    </section>
+
+    <section id="docker">
+      <h2>Passo 5 · Rodando com Docker</h2>
+      <p>O <code>Dockerfile</code> monta uma imagem com Python e a versão CPU do PyTorch (bem menor que a versão com CUDA):</p>
+      {{codigo:Dockerfile|Imagem com Python e PyTorch (CPU)}}
+      <p>O <code>docker-compose.yml</code> declara os serviços e liga pastas do seu computador ao container. Assim você edita o <code>config.yaml</code> e o checkpoint treinado aparece em <code>outputs/</code> sem precisar rebuildar a imagem.</p>
+      <div class="caixa alerta">
+        <div class="rot">Atenção</div>
+        <p>O compose abaixo é o do projeto completo e inclui os serviços <code>evaluate</code> e <code>web</code> dos passos opcionais. Se você estiver montando só o básico, copie apenas os serviços <code>train</code> e <code>generate</code>, e no <code>Dockerfile</code> deixe só os arquivos que você já criou na linha <code>COPY</code>.</p>
+      </div>
+      {{codigo:docker-compose.yml|Serviços do projeto}}
+      <p>Construa a imagem e treine:</p>
+      {{cmd}}docker compose build
+docker compose run --rm train{{/cmd}}
+      <h3>Lendo a saída</h3>
+      {{cmd:saída do treino}}Modelo: 825,856 parâmetros (0.83 M)
+Loss inicial esperada (chute aleatório) ≈ ln(95) = 4.55
+
+passo     0 | loss treino 4.6915 | loss val 4.7037 | lr 1.00e-05 |    3.1s
+passo   200 | loss treino 2.3424 | loss val 2.7271 | lr 9.94e-04 |   31.3s
+passo  1000 | loss treino 1.8022 | loss val 2.1289 | lr 5.87e-04 |  133.2s
+passo  2000 | loss treino 1.6479 | loss val 1.8330 | lr 1.00e-04 |  291.5s{{/cmd}}
+      <p>O treino leva cerca de 5 minutos. A cada 500 passos o script imprime um texto gerado, e é muito interessante acompanhar a evolução:</p>
+      <div class="tabela">
+        <table>
+          <thead><tr><th>Passo</th><th>Loss val</th><th>O que o modelo escreve</th></tr></thead>
+          <tbody>
+            <tr><td>0</td><td>4,70</td><td>sequência aleatória de caracteres (chute uniforme)</td></tr>
+            <tr><td>500</td><td>2,40</td><td><code>Entamendescante olhem ou achia de egração</code> (sílabas e espaços)</td></tr>
+            <tr><td>2000</td><td>1,83</td><td><code>sonheu escuidade, não como mosto e mais de</code> (palavras reais e inventadas, pontuação)</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="leg">Tabela 3 – Evolução do texto gerado durante o treino</p>
+      <div class="caixa">
+        <div class="rot">Treino × validação</div>
+        <p>Se a loss de <strong>treino</strong> continua caindo mas a de <strong>validação</strong> começa a <strong>subir</strong>, o modelo está decorando o texto em vez de aprender padrões: é o <em>overfitting</em>. O script avisa quando isso acontece.</p>
+      </div>
+    </section>
+
+    <section id="geracao">
+      <h2>Passo 6 · Gerando texto</h2>
+      <p>Gerar texto é aplicar o modelo em laço: ele prevê a distribuição do próximo caractere, <strong>sorteamos</strong> um, colocamos no final do contexto e repetimos. Isso se chama geração <em>autoregressiva</em>.</p>
+      {{codigo:generate.py|Geração de texto a partir do checkpoint}}
+      {{cmd}}docker compose run --rm generate --prompt "Capitu" --temperature 0.8{{/cmd}}
+      <h3>Temperatura e top-k</h3>
+      <ul>
+        <li><strong>Temperatura</strong> divide os logits antes do softmax. Abaixo de 1, as opções mais prováveis ficam ainda mais prováveis (texto previsível e repetitivo). Acima de 1, a distribuição fica mais achatada (texto criativo, depois caótico).</li>
+        <li><strong>Top-k</strong> só deixa sortear entre os <em>k</em> caracteres mais prováveis, o que corta as escolhas absurdas.</li>
+      </ul>
+      <div class="caixa alerta">
+        <div class="rot">Modelo base ≠ assistente</div>
+        <p>Experimente <code>--prompt "Qual é a capital do Brasil?"</code>. O modelo não responde, apenas continua escrevendo como Machado de Assis. Ele é um <strong>modelo base</strong>: só sabe completar texto. O ChatGPT passa por etapas extras de treino com milhares de exemplos de perguntas e respostas (<em>instruction tuning</em>) e com avaliações humanas (<em>RLHF</em>) para aprender a se comportar como assistente.</p>
+      </div>
+    </section>
+
+    <section id="avaliacao">
+      <h2>Passo 7 · Avaliando o modelo (opcional)</h2>
+      <p>A métrica clássica de modelos de linguagem é a <strong>perplexidade</strong>: <code>exp(loss)</code>. Ela pode ser lida como "entre quantos caracteres o modelo está em dúvida, em média". Um chute aleatório tem perplexidade 95; nosso modelo chega a cerca de 6.</p>
+      <p>O script <a href="https://github.com/tiagoheineck/mini-llm/blob/main/evaluate.py"><code>evaluate.py</code></a> do repositório mede a perplexidade em textos que o modelo nunca viu. Copie-o junto com a pasta <code>data/avaliacao</code> e rode:</p>
+      {{cmd}}docker compose run --rm evaluate{{/cmd}}
+      <div class="tabela">
+        <table>
+          <thead><tr><th>Texto</th><th>Perplexidade</th></tr></thead>
+          <tbody>
+            <tr><td>Chute aleatório</td><td>95</td></tr>
+            <tr><td>Validação (final de Dom Casmurro)</td><td>6,3</td></tr>
+            <tr><td>Machado: <em>Memórias Póstumas de Brás Cubas</em></td><td>6,7</td></tr>
+            <tr><td>Camões: <em>Os Lusíadas</em> (verso, português antigo)</td><td>9,7</td></tr>
+            <tr><td>Espanhol: <em>Dom Quixote</em></td><td>16,2</td></tr>
+            <tr><td>Inglês: <em>Alice no País das Maravilhas</em></td><td>52,7</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="leg">Tabela 4 – Quanto mais distante do texto de treino, pior o modelo se sai</p>
+      <p>O modelo não aprendeu "linguagem": aprendeu o português do Machado. LLMs grandes generalizam porque são treinadas com trilhões de tokens de textos muito variados.</p>
+    </section>
+
+    <section id="playground">
+      <h2>Passo 8 · Interface web (opcional)</h2>
+      <p>O repositório traz um <em>playground</em> web (<a href="https://github.com/tiagoheineck/mini-llm/blob/main/server.py"><code>server.py</code></a> e <a href="https://github.com/tiagoheineck/mini-llm/blob/main/static/index.html"><code>static/index.html</code></a>) com chat em streaming, controles de temperatura e top-k e um painel que mostra, enquanto você digita, as probabilidades do próximo caractere.</p>
+      {{cmd}}docker compose up -d web{{/cmd}}
+      <p>Abra <a href="http://localhost:8000">http://localhost:8000</a>. Para desligar: <code>docker compose down</code>.</p>
+    </section>
+
+    <section id="atividades">
+      <h2>Atividades</h2>
+      <p>Qualquer hiperparâmetro pode ser trocado na linha de comando, sem editar arquivos: <code>docker compose run --rm train --learning_rate 1e-2</code>. Para cada experimento, anote a loss de validação final e um trecho do texto gerado.</p>
+      <div class="exercicio">
+        <h4>Exercício 1 · Learning rate</h4>
+        <p>Treine com <code>--learning_rate 1e-2</code> e depois com <code>--learning_rate 1e-5</code>. Compare as curvas de loss com o padrão (<code>1e-3</code>).</p>
+        <details><summary>Ver resposta</summary><div class="resp"><p><strong>Resposta:</strong> com 1e-5 a loss cai muito devagar e o modelo mal sai do chute aleatório em 2000 passos (passos pequenos demais). Com 1e-2 a loss tende a oscilar ou estagnar, porque os passos são grandes demais e "pulam" o mínimo. O learning rate é, em geral, o hiperparâmetro mais sensível.</p></div></details>
+      </div>
+      <div class="exercicio">
+        <h4>Exercício 2 · Tamanho do modelo</h4>
+        <p>Compare um modelo minúsculo (<code>--n_layer 1 --n_embd 32 --n_head 2</code>) com um maior (<code>--n_layer 6 --n_embd 192 --n_head 6</code>). Registre o número de parâmetros, o tempo de treino e a loss final.</p>
+        <details><summary>Ver resposta</summary><div class="resp"><p><strong>Resposta:</strong> o modelo minúsculo (~20 mil parâmetros) treina rápido, mas a loss estaciona alta e o texto não forma palavras. O maior (~2,7 milhões) atinge loss menor e escreve melhor, mas leva várias vezes mais tempo. Essa é a ideia das <em>scaling laws</em>: mais parâmetros, dados e computação geram modelos melhores, de forma previsível.</p></div></details>
+      </div>
+      <div class="exercicio">
+        <h4>Exercício 3 · Janela de contexto</h4>
+        <p>Treine com <code>--block_size 8</code>. O que acontece com a coerência do texto gerado? Por quê?</p>
+        <details><summary>Ver resposta</summary><div class="resp"><p><strong>Resposta:</strong> com só 8 caracteres de contexto, o modelo não consegue "lembrar" o início de uma palavra longa nem a palavra anterior. Ele ainda forma sílabas plausíveis, mas as palavras e frases perdem coerência. LLMs atuais têm contextos de centenas de milhares de tokens.</p></div></details>
+      </div>
+      <div class="exercicio">
+        <h4>Exercício 4 · Provocando overfitting</h4>
+        <p>Treine um modelo grande, sem dropout e por mais tempo: <code>--dropout 0 --n_layer 8 --n_embd 256 --n_head 8 --max_iters 4000</code>. Observe as duas losses. Em que momento a validação para de melhorar?</p>
+        <details><summary>Ver resposta</summary><div class="resp"><p><strong>Resposta:</strong> a loss de treino continua caindo, enquanto a de validação para de cair e começa a subir, e o script marca esses pontos. O modelo passou a decorar trechos de Dom Casmurro. Soluções: mais dados, dropout, modelo menor ou parar o treino mais cedo (<em>early stopping</em>).</p></div></details>
+      </div>
+      <div class="exercicio">
+        <h4>Exercício 5 · Seu próprio corpus</h4>
+        <p>Troque <code>data/input.txt</code> por outro texto (código Python, letras de música, um livro de outro autor) e treine de novo. Gere amostras e meça a perplexidade no texto original. O vocabulário mudou?</p>
+        <details><summary>Ver resposta</summary><div class="resp"><p><strong>Resposta:</strong> o modelo passa a imitar o estilo do novo corpus (com código, por exemplo, ele aprende indentação, <code>def</code> e parênteses). O vocabulário é montado a partir dos caracteres presentes no texto, então muda junto. Caracteres que não aparecem no treino ficam fora do vocabulário, e o modelo nem consegue representá-los.</p></div></details>
+      </div>
+      <div class="exercicio">
+        <h4>Exercício 6 · Temperatura</h4>
+        <p>Gere três textos com o mesmo prompt usando temperaturas 0,3, 1,0 e 1,8. Descreva a diferença e explique-a com base no softmax.</p>
+        <details><summary>Ver resposta</summary><div class="resp"><p><strong>Resposta:</strong> com 0,3 o texto fica repetitivo ("que a que a que…"), porque dividir os logits por um número pequeno amplia as diferenças e o caractere mais provável quase sempre vence. Com 1,8 a distribuição achata, caracteres improváveis passam a ser sorteados e o texto vira ruído. O valor 1,0 usa as probabilidades que o modelo realmente aprendeu.</p></div></details>
+      </div>
+    </section>
+
+    <section id="referencias" class="refs">
+      <h2>Referências</h2>
+      <p>VASWANI, Ashish et al. <strong>Attention is all you need</strong>. In: Advances in Neural Information Processing Systems, 30, 2017. Disponível em: <a href="https://arxiv.org/abs/1706.03762">https://arxiv.org/abs/1706.03762</a>.</p>
+      <p>RADFORD, Alec et al. <strong>Language models are unsupervised multitask learners</strong>. OpenAI, 2019. Disponível em: <a href="https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf">https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf</a>.</p>
+      <p>KARPATHY, Andrej. <strong>nanoGPT</strong>: the simplest, fastest repository for training/finetuning medium-sized GPTs. Disponível em: <a href="https://github.com/karpathy/nanoGPT">https://github.com/karpathy/nanoGPT</a>.</p>
+      <p>KAPLAN, Jared et al. <strong>Scaling laws for neural language models</strong>. arXiv:2001.08361, 2020. Disponível em: <a href="https://arxiv.org/abs/2001.08361">https://arxiv.org/abs/2001.08361</a>.</p>
+      <p>ASSIS, Machado de. <strong>Dom Casmurro</strong>. Rio de Janeiro: H. Garnier, 1899. Disponível em: <a href="https://www.gutenberg.org/ebooks/55752">https://www.gutenberg.org/ebooks/55752</a>.</p>
+      <p>PYTORCH. <strong>PyTorch documentation</strong>. Disponível em: <a href="https://pytorch.org/docs/stable/">https://pytorch.org/docs/stable/</a>.</p>
+    </section>
