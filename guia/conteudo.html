@@ -102,11 +102,43 @@ encode("Capitu")  # → [27, 50, 65, 58, 69, 70]{{/cmd}}
 
     <section id="parametros">
       <h2>Passo 3 · Os parâmetros de treino</h2>
-      <p>Todos os "botões" do experimento ficam em <code>config.yaml</code>. Há dois tipos de número em uma rede neural:</p>
+      <p>Todos os "botões" do experimento ficam em <code>config.yaml</code>. Antes de mexer neles, é importante separar dois conceitos que costumam ser confundidos.</p>
+
+      <h3>Parâmetros × hiperparâmetros</h3>
+      <p>Não são a mesma coisa. A diferença está em <strong>quem define o valor</strong>:</p>
+      <div class="tabela">
+        <table>
+          <thead><tr><th></th><th>Parâmetros</th><th>Hiperparâmetros</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Quem define</strong></td><td>O <strong>treino</strong>, sozinho (gradiente + otimizador)</td><td><strong>Você</strong>, antes de treinar</td></tr>
+            <tr><td><strong>O que são</strong></td><td>Os pesos da rede: os números dentro das matrizes</td><td>Escolhas sobre a rede e sobre o treino</td></tr>
+            <tr><td><strong>No nosso projeto</strong></td><td><strong>825.856</strong> números</td><td>Cerca de 20 valores</td></tr>
+            <tr><td><strong>Onde ficam</strong></td><td><code>outputs/ckpt.pt</code></td><td><code>config.yaml</code></td></tr>
+            <tr><td><strong>Exemplos</strong></td><td>Os pesos de <code>qkv</code>, <code>mlp</code>, <code>tok_emb</code>…</td><td><code>learning_rate</code>, <code>n_layer</code>, <code>dropout</code>, <code>batch_size</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="leg">Tabela 2 – Parâmetros são aprendidos; hiperparâmetros são escolhidos</p>
+      <div class="caixa">
+        <div class="rot">Analogia</div>
+        <p>Pense em aprender a tocar violão. Os <strong>hiperparâmetros</strong> são o plano de estudo: quantas horas por dia, por quantas semanas, com qual método. Os <strong>parâmetros</strong> são o que muda no seu cérebro e nos seus dedos de tanto praticar. Você escolhe o plano; o aprendizado em si acontece sozinho.</p>
+      </div>
+      <p>Os dois estão ligados: alguns hiperparâmetros definem <strong>quantos</strong> parâmetros existem. Aumentar <code>n_layer</code> ou <code>n_embd</code> cria mais pesos na rede:</p>
       <ul>
-        <li><strong>Parâmetros</strong> (pesos): os ~826 mil números que o treino ajusta sozinho.</li>
-        <li><strong>Hiperparâmetros</strong>: as escolhas que <em>você</em> faz antes de treinar, como as deste arquivo.</li>
+        <li><code>--n_layer 1 --n_embd 32</code> → cerca de 21 mil parâmetros;</li>
+        <li>o padrão (<code>n_layer 4</code>, <code>n_embd 128</code>) → cerca de 826 mil;</li>
+        <li><code>--n_layer 6 --n_embd 192</code> → cerca de 2,7 milhões.</li>
       </ul>
+      <p>Quando se diz que o GPT-3 tem "175 bilhões de parâmetros", são os <strong>pesos</strong>. Os hiperparâmetros dele cabem numa pequena tabela do artigo.</p>
+      <p>No código, a diferença aparece assim:</p>
+      {{cmd:python}}# Parâmetros: o otimizador recebe os pesos e os ajusta a cada optimizer.step()
+optimizer = torch.optim.AdamW(model.parameters(), lr=cfg["learning_rate"])
+
+# Hiperparâmetros: lidos uma vez do config.yaml e fixos durante o treino
+cfg["n_layer"], cfg["batch_size"], cfg["dropout"]{{/cmd}}
+      <p>A exceção é o learning rate, que muda a cada passo. Mas ele muda segundo uma regra que <em>você</em> definiu (warmup + cosseno, explicada abaixo), então continua sendo um hiperparâmetro.</p>
+
+      <h3>O arquivo de configuração</h3>
       {{codigo:config.yaml|Hiperparâmetros do treino}}
       <div class="tabela">
         <table>
@@ -120,7 +152,7 @@ encode("Capitu")  # → [27, 50, 65, 58, 69, 70]{{/cmd}}
           </tbody>
         </table>
       </div>
-      <p class="leg">Tabela 2 – Efeito dos principais hiperparâmetros</p>
+      <p class="leg">Tabela 3 – Efeito dos principais hiperparâmetros</p>
       <h3>O agendamento do learning rate</h3>
       <p>O learning rate não é constante. Nos primeiros <code>warmup_iters</code> passos ele <strong>sobe</strong> de zero até <code>learning_rate</code> (<em>warmup</em>), porque no início os pesos são aleatórios e passos grandes desestabilizam o modelo. Depois ele <strong>decai em cosseno</strong> até <code>min_lr</code>, para fazer ajustes finos no final. É o mesmo esquema usado no treino do GPT-3 e do LLaMA.</p>
     </section>
@@ -168,7 +200,7 @@ passo  2000 | loss treino 1.6479 | loss val 1.8330 | lr 1.00e-04 |  291.5s{{/cmd
           </tbody>
         </table>
       </div>
-      <p class="leg">Tabela 3 – Evolução do texto gerado durante o treino</p>
+      <p class="leg">Tabela 4 – Evolução do texto gerado durante o treino</p>
       <div class="caixa">
         <div class="rot">Treino × validação</div>
         <p>Se a loss de <strong>treino</strong> continua caindo mas a de <strong>validação</strong> começa a <strong>subir</strong>, o modelo está decorando o texto em vez de aprender padrões: é o <em>overfitting</em>. O script avisa quando isso acontece.</p>
@@ -209,7 +241,7 @@ passo  2000 | loss treino 1.6479 | loss val 1.8330 | lr 1.00e-04 |  291.5s{{/cmd
           </tbody>
         </table>
       </div>
-      <p class="leg">Tabela 4 – Quanto mais distante do texto de treino, pior o modelo se sai</p>
+      <p class="leg">Tabela 5 – Quanto mais distante do texto de treino, pior o modelo se sai</p>
       <p>O modelo não aprendeu "linguagem": aprendeu o português do Machado. LLMs grandes generalizam porque são treinadas com trilhões de tokens de textos muito variados.</p>
     </section>
 
